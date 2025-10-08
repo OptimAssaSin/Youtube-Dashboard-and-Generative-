@@ -1,4 +1,4 @@
-# process_data.py (Finalized Version)
+# process_data.py (Corrected for Timezone and FutureWarnings)
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
@@ -23,11 +23,18 @@ logging.info("Cleaning and preprocessing data...")
 df['published_at'] = pd.to_datetime(df['published_at'], errors='coerce')
 df['fetch_timestamp'] = pd.to_datetime(df['fetch_timestamp'], errors='coerce')
 df['channel_published_at'] = pd.to_datetime(df['channel_published_at'], errors='coerce')
+
+# --- FIX 1: Make both timestamp columns timezone-aware (UTC) ---
+df['fetch_timestamp'] = df['fetch_timestamp'].dt.tz_localize('UTC')
+df['published_at'] = df['published_at'].dt.tz_localize('UTC')
+df['channel_published_at'] = df['channel_published_at'].dt.tz_localize('UTC')
+
 df.dropna(subset=['published_at', 'fetch_timestamp'], inplace=True)
 
 # Clean text fields
+# --- FIX 2: Use modern syntax for fillna to avoid warnings ---
 for col in ['tags', 'title', 'description', 'channel_keywords', 'topic_categories']:
-    df[col].fillna('', inplace=True)
+    df[col] = df[col].fillna('')
     df[col] = df[col].str.lower().str.replace('[^a-z0-9\s|]', '', regex=True).str.replace('|', ' ')
 
 # Parse duration to seconds
@@ -48,7 +55,7 @@ df['duration_seconds'] = df['duration'].apply(parse_duration)
 
 # --- 3. FEATURE ENGINEERING ---
 logging.info("Engineering features and labels...")
-# Time-based features
+# Time-based features (This will now work correctly)
 df['days_since_published'] = (df['fetch_timestamp'] - df['published_at']).dt.days
 df['channel_age_days'] = (df['published_at'] - df['channel_published_at']).dt.days
 df['views_per_day'] = df['view_count'] / (df['days_since_published'] + 1)
@@ -57,7 +64,7 @@ df['views_per_day'] = df['view_count'] / (df['days_since_published'] + 1)
 df['title_length'] = df['title'].str.len()
 df['tag_count'] = df['tags'].str.split().str.len()
 
-# Handle Categorical Features (Example using one-hot encoding for the model later)
+# Handle Categorical Features
 df['license'] = df['license'].astype('category')
 df['live_broadcast_content'] = df['live_broadcast_content'].astype('category')
 
@@ -67,7 +74,6 @@ for col in ['avg_comment_sentiment', 'comment_sentiment_std', 'avg_top_comment_r
 
 # --- Create Target Labels for ML Models ---
 logging.info("Calculating target labels for models...")
-# Using max views as a proxy for a video's peak performance
 df['peak_view_count'] = df.groupby('video_id')['view_count'].transform('max')
 view_threshold = df['peak_view_count'].quantile(0.75)
 df['will_trend'] = np.where(df['peak_view_count'] >= view_threshold, 1, 0)
