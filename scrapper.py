@@ -1,4 +1,4 @@
-# scraper.py (Finalized Version with all features)
+# scraper.py (Finalized Version with all features and batching fix)
 import pandas as pd
 from googleapiclient.discovery import build
 from sqlalchemy import create_engine
@@ -56,11 +56,23 @@ def analyze_comment_threads(youtube, video_id):
 def fetch_new_video_details(youtube, new_ids):
     if not new_ids: return pd.DataFrame()
 
-    video_request = youtube.videos().list(part="snippet,contentDetails,status,topicDetails,statistics", id=",".join(new_ids))
-    video_response = video_request.execute()
-    video_items = video_response.get('items', [])
+    # --- FIX: Batch the video details request in chunks of 50 ---
+    video_items = []
+    for i in range(0, len(new_ids), 50):
+        chunk = new_ids[i:i+50]
+        try:
+            video_request = youtube.videos().list(
+                part="snippet,contentDetails,status,topicDetails,statistics",
+                id=",".join(chunk)
+            )
+            video_response = video_request.execute()
+            video_items.extend(video_response.get('items', []))
+        except Exception as e:
+            logging.error(f"Error fetching video details for chunk {i//50 + 1}: {e}")
+
     if not video_items: return pd.DataFrame()
 
+    # The rest of the function now works on the collected 'video_items'
     channel_ids = list({item['snippet']['channelId'] for item in video_items})
     channel_data = {}
     
@@ -151,9 +163,7 @@ def main():
         existing_ids = get_existing_video_ids(conn)
         logging.info(f"Found {len(existing_ids)} existing videos in the database.")
 
-        # --- MODIFICATION START ---
-        # Define a list of regions to fetch trending videos from
-        region_codes = ['IN', 'US', 'GB', 'JP', 'BR'] # India, US, Great Britain, Japan, Brazil
+        region_codes = ['IN', 'US', 'GB', 'JP', 'BR']
         all_trending_ids = set()
 
         logging.info(f"Fetching trending videos for regions: {region_codes}")
@@ -173,7 +183,6 @@ def main():
                 logging.error(f"Could not fetch trending videos for region '{region}': {e}")
         
         logging.info(f"Total unique trending videos found across all regions: {len(all_trending_ids)}")
-        # --- MODIFICATION END ---
         
         new_ids = list(all_trending_ids - existing_ids)
         
