@@ -1,4 +1,4 @@
-# process_data.py (Corrected for Timezone and FutureWarnings)
+# process_data.py (Corrected for "Already tz-aware" Error)
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
@@ -19,20 +19,14 @@ df = pd.merge(df_videos, df_stats, on='video_id')
 
 # --- 2. CLEAN & PREPROCESS DATA ---
 logging.info("Cleaning and preprocessing data...")
-# Convert dates and handle potential errors
-df['published_at'] = pd.to_datetime(df['published_at'], errors='coerce')
-df['fetch_timestamp'] = pd.to_datetime(df['fetch_timestamp'], errors='coerce')
-df['channel_published_at'] = pd.to_datetime(df['channel_published_at'], errors='coerce')
-
-# --- FIX 1: Make both timestamp columns timezone-aware (UTC) ---
-df['fetch_timestamp'] = df['fetch_timestamp'].dt.tz_localize('UTC')
-df['published_at'] = df['published_at'].dt.tz_localize('UTC')
-df['channel_published_at'] = df['channel_published_at'].dt.tz_localize('UTC')
+# --- FIX IS HERE: Use utc=True to handle both naive and aware timestamps consistently ---
+df['published_at'] = pd.to_datetime(df['published_at'], utc=True, errors='coerce')
+df['fetch_timestamp'] = pd.to_datetime(df['fetch_timestamp'], utc=True, errors='coerce')
+df['channel_published_at'] = pd.to_datetime(df['channel_published_at'], utc=True, errors='coerce')
 
 df.dropna(subset=['published_at', 'fetch_timestamp'], inplace=True)
 
-# Clean text fields
-# --- FIX 2: Use modern syntax for fillna to avoid warnings ---
+# Clean text fields using modern pandas syntax
 for col in ['tags', 'title', 'description', 'channel_keywords', 'topic_categories']:
     df[col] = df[col].fillna('')
     df[col] = df[col].str.lower().str.replace('[^a-z0-9\s|]', '', regex=True).str.replace('|', ' ')
@@ -58,6 +52,9 @@ logging.info("Engineering features and labels...")
 # Time-based features (This will now work correctly)
 df['days_since_published'] = (df['fetch_timestamp'] - df['published_at']).dt.days
 df['channel_age_days'] = (df['published_at'] - df['channel_published_at']).dt.days
+
+# Handle potential negative values in days_since_published if there's a data anomaly
+df['days_since_published'] = df['days_since_published'].apply(lambda x: max(0, x))
 df['views_per_day'] = df['view_count'] / (df['days_since_published'] + 1)
 
 # Text-based features
