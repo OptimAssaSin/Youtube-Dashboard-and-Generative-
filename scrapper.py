@@ -15,7 +15,7 @@ engine = create_engine(f'sqlite:///{DB_FILE}')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 sentiment_analyzer = SentimentIntensityAnalyzer()
 
-# --- Database Functions (no changes) ---
+# --- Database Functions ---
 def get_db_connection():
     return engine.connect()
 
@@ -25,7 +25,7 @@ def get_existing_video_ids(conn):
     except Exception:
         return set()
 
-# --- API Functions (Updated) ---
+# --- API Functions ---
 def analyze_comment_threads(youtube, video_id):
     try:
         request = youtube.commentThreads().list(
@@ -46,7 +46,7 @@ def analyze_comment_threads(youtube, video_id):
 
         return {
             'avg_sentiment': round(sum(sentiments) / len(sentiments), 4),
-            'sentiment_std': round(pd.Series(sentiments).std(ddof=0), 4), # ddof=0 for population std dev
+            'sentiment_std': round(pd.Series(sentiments).std(ddof=0), 4),
             'avg_reply_count': round(sum(reply_counts) / len(reply_counts), 2)
         }
     except Exception as e:
@@ -56,7 +56,6 @@ def analyze_comment_threads(youtube, video_id):
 def fetch_new_video_details(youtube, new_ids):
     if not new_ids: return pd.DataFrame()
 
-    # UPDATED: Added 'statistics' to get favoriteCount
     video_request = youtube.videos().list(part="snippet,contentDetails,status,topicDetails,statistics", id=",".join(new_ids))
     video_response = video_request.execute()
     video_items = video_response.get('items', [])
@@ -67,7 +66,6 @@ def fetch_new_video_details(youtube, new_ids):
     
     for i in range(0, len(channel_ids), 50):
         chunk = channel_ids[i:i+50]
-        # UPDATED: Added 'brandingSettings' and 'topicDetails'
         channel_request = youtube.channels().list(part="statistics,snippet,brandingSettings,topicDetails", id=",".join(chunk))
         channel_response = channel_request.execute()
         for item in channel_response.get('items', []):
@@ -126,7 +124,6 @@ def fetch_new_video_details(youtube, new_ids):
     return pd.DataFrame(video_details)
 
 def fetch_stats_for_all_videos(youtube, all_ids):
-    # This function remains the same, no changes needed here
     if not all_ids: return pd.DataFrame()
     stats_list = []
     for i in range(0, len(all_ids), 50):
@@ -145,15 +142,37 @@ def fetch_stats_for_all_videos(youtube, all_ids):
     return pd.DataFrame(stats_list)
 
 def main():
-    # This function remains the same, no changes needed here
     if not API_KEY:
         logging.error("API_KEY environment variable not found.")
         return
     youtube = build('youtube', 'v3', developerKey=API_KEY)
+    
     with get_db_connection() as conn:
-        # ... (rest of main function is identical)
-        pass # Placeholder for brevity
+        existing_ids = get_existing_video_ids(conn)
+        logging.info(f"Found {len(existing_ids)} existing videos in the database.")
+
+        trending_req = youtube.videos().list(part="id", chart="mostPopular", regionCode="IN", maxResults=50)
+        trending_res = trending_req.execute()
+        trending_ids = {item['id'] for item in trending_res.get('items', [])}
         
+        new_ids = list(trending_ids - existing_ids)
+        
+        if new_ids:
+            logging.info(f"Found {len(new_ids)} new trending videos. Fetching details.")
+            df_new_details = fetch_new_video_details(youtube, new_ids)
+            if not df_new_details.empty:
+                df_new_details.to_sql('videos', conn, if_exists='append', index=False)
+                logging.info(f"Saved details for {len(df_new_details)} new videos.")
+        else:
+            logging.info("No new trending videos found.")
+            
+        all_tracked_ids = list(existing_ids.union(trending_ids))
+        if all_tracked_ids:
+            logging.info(f"Fetching stats for {len(all_tracked_ids)} total videos.")
+            df_stats = fetch_stats_for_all_videos(youtube, all_tracked_ids)
+            if not df_stats.empty:
+                df_stats.to_sql('statistics', conn, if_exists='append', index=False)
+                logging.info(f"Saved {len(df_stats)} new statistics records.")
+
 if __name__ == '__main__':
-    # This remains the same, but you would call main()
     main()
