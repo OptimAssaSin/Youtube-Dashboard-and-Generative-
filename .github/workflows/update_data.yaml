@@ -26,10 +26,10 @@ jobs:
       - name: Run Scraper to fetch new data
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-        run: python scraper.py
+        run: python scrapper.py
 
       - name: Run Processor to generate final datasets
-        run: python process_data.py
+        run: python data_processing.py
 
       - name: Commit and push changes
         run: |
