@@ -1,4 +1,4 @@
-# scraper.py (v6 - Multi-Region Fetching)
+
 import pandas as pd
 from googleapiclient.discovery import build
 from sqlalchemy import create_engine
