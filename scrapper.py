@@ -1,4 +1,4 @@
-# scrapper.py (Corrected)
+# scrapper.py (Corrected for explicit transactions)
 import pandas as pd
 from googleapiclient.discovery import build
 from sqlalchemy import create_engine
@@ -8,7 +8,7 @@ import logging
 import os
 import re
 
-# --- CORRECTED CONFIGURATION ---
+# --- CONFIGURATION ---
 workspace = os.environ.get('GITHUB_WORKSPACE')
 DB_FILE = os.path.join(workspace, 'youtube_data.db') if workspace else 'youtube_data.db'
 
@@ -18,9 +18,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 sentiment_analyzer = SentimentIntensityAnalyzer()
 
 # --- Database Functions ---
-def get_db_connection():
-    return engine.connect()
-
 def get_existing_video_ids(conn):
     try:
         return set(pd.read_sql('SELECT video_id FROM videos', conn)['video_id'].tolist())
@@ -154,7 +151,9 @@ def main():
         return
     youtube = build('youtube', 'v3', developerKey=API_KEY)
 
-    with get_db_connection() as conn:
+    # ✅ --- FIX IS HERE: Use engine.begin() for an explicit transaction ---
+    # This ensures all changes within the 'with' block are committed to the db file.
+    with engine.begin() as conn:
         existing_ids = get_existing_video_ids(conn)
         logging.info(f"Found {len(existing_ids)} existing videos in the database.")
 
