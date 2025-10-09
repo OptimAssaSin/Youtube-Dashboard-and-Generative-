@@ -9,6 +9,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 workspace = os.environ.get('GITHUB_WORKSPACE')
 DB_FILE = os.path.join(workspace, 'youtube_data.db') if workspace else 'youtube_data.db'
+
 engine = create_engine(f'sqlite:///{DB_FILE}')
 
 logging.info("Loading legacy CSV files...")
