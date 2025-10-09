@@ -10,8 +10,7 @@ import re
 
 # --- Configuration & Setup ---
 API_KEY = os.environ.get('YOUTUBE_API_KEY')
-workspace = os.environ.get('GITHUB_WORKSPACE')
-DB_FILE = os.path.join(workspace, 'youtube_data.db') if workspace else 'youtube_data.db'
+DB_FILE = 'youtube_data.db'
 engine = create_engine(f'sqlite:///{DB_FILE}')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 sentiment_analyzer = SentimentIntensityAnalyzer()
@@ -203,6 +202,7 @@ def main():
             if not df_stats.empty:
                 df_stats.to_sql('statistics', conn, if_exists='append', index=False)
                 logging.info(f"Saved {len(df_stats)} new statistics records.")
+    engine.dispose()
 
 if __name__ == '__main__':
     main()

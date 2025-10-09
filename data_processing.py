@@ -4,12 +4,10 @@ import numpy as np
 from sqlalchemy import create_engine
 import logging
 import re
-import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-workspace = os.environ.get('GITHUB_WORKSPACE')
-DB_FILE = os.path.join(workspace, 'youtube_data.db') if workspace else 'youtube_data.db'
+DB_FILE = 'youtube_data.db'
 engine = create_engine(f'sqlite:///{DB_FILE}')
 
 # --- 1. LOAD DATA FROM DATABASE ---
@@ -96,3 +94,5 @@ with open('corpus.txt', 'w', encoding='utf-8') as f:
     for line in corpus_text:
         f.write(str(line) + '\n')
 logging.info("Text corpus for generative model saved to 'corpus.txt'.")
+
+engine.dispose()
