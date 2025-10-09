@@ -1,7 +1,12 @@
 # setup_database.py (Finalized Version)
 import sqlite3
+import os
 
-conn = sqlite3.connect('youtube_data.db')
+workspace = os.environ.get('GITHUB_WORKSPACE')
+DB_FILE = os.path.join(workspace, 'youtube_data.db') if workspace else 'youtube_data.db'
+
+
+conn = sqlite3.connect(DB_FILE)
 cursor = conn.cursor()
 
 cursor.execute('''

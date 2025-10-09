@@ -10,7 +10,8 @@ import re
 
 # --- Configuration & Setup ---
 API_KEY = os.environ.get('YOUTUBE_API_KEY')
-DB_FILE = 'youtube_data.db'
+workspace = os.environ.get('GITHUB_WORKSPACE')
+DB_FILE = os.path.join(workspace, 'youtube_data.db') if workspace else 'youtube_data.db'
 engine = create_engine(f'sqlite:///{DB_FILE}')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 sentiment_analyzer = SentimentIntensityAnalyzer()

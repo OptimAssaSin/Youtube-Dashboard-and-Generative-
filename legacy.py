@@ -3,10 +3,12 @@ import pandas as pd
 from sqlalchemy import create_engine
 import logging
 import datetime
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-DB_FILE = 'youtube_data.db'
+workspace = os.environ.get('GITHUB_WORKSPACE')
+DB_FILE = os.path.join(workspace, 'youtube_data.db') if workspace else 'youtube_data.db'
 engine = create_engine(f'sqlite:///{DB_FILE}')
 
 logging.info("Loading legacy CSV files...")
