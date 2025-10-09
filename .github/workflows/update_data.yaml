@@ -35,16 +35,17 @@ jobs:
       - name: Run Processor to generate final datasets
         run: python data_processing.py
 
-      - name: Check file status
-        run: ls -lh
-
-      - name: Check git status
-        run: git status
-
       - name: Commit and push changes
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git pull
           git add youtube_data.db final_processed_data.parquet corpus.txt
-          git commit -m "Automated data update" || echo "No data changes to commit"
-          git push || echo "No data changes to push"
+          
+          # Commit only if there are changes
+          if ! git diff --staged --quiet; then
+            git commit -m "Automated data update: $(date -u)"
+            git push
+          else
+            echo "No data changes to commit."
+          fi

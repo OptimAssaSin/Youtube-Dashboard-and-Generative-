@@ -1,4 +1,4 @@
-# process_data.py (Corrected for "Already tz-aware" Error)
+# process_data.py (Corrected)
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
@@ -21,14 +21,13 @@ df = pd.merge(df_videos, df_stats, on='video_id')
 
 # --- 2. CLEAN & PREPROCESS DATA ---
 logging.info("Cleaning and preprocessing data...")
-# --- FIX IS HERE: Use utc=True to handle both naive and aware timestamps consistently ---
 df['published_at'] = pd.to_datetime(df['published_at'], utc=True, errors='coerce')
 df['fetch_timestamp'] = pd.to_datetime(df['fetch_timestamp'], utc=True, errors='coerce')
 df['channel_published_at'] = pd.to_datetime(df['channel_published_at'], utc=True, errors='coerce')
 
 df.dropna(subset=['published_at', 'fetch_timestamp'], inplace=True)
 
-# Clean text fields using modern pandas syntax
+# Clean text fields
 for col in ['tags', 'title', 'description', 'channel_keywords', 'topic_categories']:
     df[col] = df[col].fillna('')
     df[col] = df[col].str.lower().str.replace('[^a-z0-9\s|]', '', regex=True).str.replace('|', ' ')
@@ -51,25 +50,21 @@ df['duration_seconds'] = df['duration'].apply(parse_duration)
 
 # --- 3. FEATURE ENGINEERING ---
 logging.info("Engineering features and labels...")
-# Time-based features (This will now work correctly)
 df['days_since_published'] = (df['fetch_timestamp'] - df['published_at']).dt.days
 df['channel_age_days'] = (df['published_at'] - df['channel_published_at']).dt.days
-
-# Handle potential negative values in days_since_published if there's a data anomaly
 df['days_since_published'] = df['days_since_published'].apply(lambda x: max(0, x))
 df['views_per_day'] = df['view_count'] / (df['days_since_published'] + 1)
 
-# Text-based features
 df['title_length'] = df['title'].str.len()
 df['tag_count'] = df['tags'].str.split().str.len()
 
-# Handle Categorical Features
 df['license'] = df['license'].astype('category')
 df['live_broadcast_content'] = df['live_broadcast_content'].astype('category')
 
-# Fill NaN values for new numeric features
+# ✅ --- FIX IS HERE ---
+# Fill NaN values for new numeric features using direct assignment
 for col in ['avg_comment_sentiment', 'comment_sentiment_std', 'avg_top_comment_replies', 'favorite_count', 'channel_video_count']:
-    df[col].fillna(0, inplace=True)
+    df[col] = df[col].fillna(0)
 
 # --- Create Target Labels for ML Models ---
 logging.info("Calculating target labels for models...")
