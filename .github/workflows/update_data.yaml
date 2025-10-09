@@ -35,6 +35,12 @@ jobs:
       - name: Run Processor to generate final datasets
         run: python data_processing.py
 
+      - name: Check file status
+        run: ls -lh
+
+      - name: Check git status
+        run: git status
+
       - name: Commit and push changes
         run: |
           git config --global user.name 'github-actions[bot]'
