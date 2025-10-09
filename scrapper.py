@@ -1,86 +1,197 @@
-# data_processing.py (Corrected)
+# scrapper.py (Corrected)
 import pandas as pd
-import numpy as np
+from googleapiclient.discovery import build
 from sqlalchemy import create_engine
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import datetime
 import logging
-import re
 import os
+import re
 
 # --- CORRECTED CONFIGURATION ---
 workspace = os.environ.get('GITHUB_WORKSPACE')
 DB_FILE = os.path.join(workspace, 'youtube_data.db') if workspace else 'youtube_data.db'
 
+API_KEY = os.environ.get('YOUTUBE_API_KEY')
 engine = create_engine(f'sqlite:///{DB_FILE}')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+sentiment_analyzer = SentimentIntensityAnalyzer()
 
-# --- 1. LOAD DATA FROM DATABASE ---
-logging.info("Loading data from database...")
-with engine.connect() as conn:
-    df_videos = pd.read_sql('SELECT * FROM videos', conn)
-    df_stats = pd.read_sql('SELECT * FROM statistics', conn)
-df = pd.merge(df_videos, df_stats, on='video_id')
+# --- Database Functions ---
+def get_db_connection():
+    return engine.connect()
 
-# --- 2. CLEAN & PREPROCESS DATA ---
-logging.info("Cleaning and preprocessing data...")
-df['published_at'] = pd.to_datetime(df['published_at'], utc=True, errors='coerce')
-df['fetch_timestamp'] = pd.to_datetime(df['fetch_timestamp'], utc=True, errors='coerce')
-df['channel_published_at'] = pd.to_datetime(df['channel_published_at'], utc=True, errors='coerce')
-df.dropna(subset=['published_at', 'fetch_timestamp'], inplace=True)
+def get_existing_video_ids(conn):
+    try:
+        return set(pd.read_sql('SELECT video_id FROM videos', conn)['video_id'].tolist())
+    except Exception:
+        return set()
 
-for col in ['tags', 'title', 'description', 'channel_keywords', 'topic_categories']:
-    df[col] = df[col].fillna('')
-    df[col] = df[col].str.lower().str.replace('[^a-z0-9\s|]', '', regex=True).str.replace('|', ' ')
+# --- API Functions ---
+def analyze_comment_threads(youtube, video_id):
+    try:
+        request = youtube.commentThreads().list(part="snippet", videoId=video_id, maxResults=20, order="relevance")
+        response = request.execute()
 
-def parse_duration(duration_str):
-    if not isinstance(duration_str, str) or not duration_str.startswith('PT'):
-        try: return int(float(duration_str))
-        except: return 0
-    seconds = 0
-    parts = re.findall(r'(\d+)([HMS])', duration_str)
-    for value, unit in parts:
-        value = int(value)
-        if unit == 'H': seconds += value * 3600
-        elif unit == 'M': seconds += value * 60
-        elif unit == 'S': seconds += value
-    return seconds
+        sentiments, reply_counts = [], []
+        for item in response.get('items', []):
+            snippet = item['snippet']
+            comment_text = snippet['topLevelComment']['snippet']['textOriginal']
+            score = sentiment_analyzer.polarity_scores(comment_text)['compound']
+            sentiments.append(score)
+            reply_counts.append(snippet.get('totalReplyCount', 0))
 
-df['duration_seconds'] = df['duration'].apply(parse_duration)
+        if not sentiments:
+            return {'avg_sentiment': 0.0, 'sentiment_std': 0.0, 'avg_reply_count': 0.0}
 
-# --- 3. FEATURE ENGINEERING ---
-logging.info("Engineering features and labels...")
-df['days_since_published'] = (df['fetch_timestamp'] - df['published_at']).dt.days
-df['channel_age_days'] = (df['published_at'] - df['channel_published_at']).dt.days
-df['days_since_published'] = df['days_since_published'].apply(lambda x: max(0, x))
-df['views_per_day'] = df['view_count'] / (df['days_since_published'] + 1)
-df['title_length'] = df['title'].str.len()
-df['tag_count'] = df['tags'].str.split().str.len()
-df['license'] = df['license'].astype('category')
-df['live_broadcast_content'] = df['live_broadcast_content'].astype('category')
-for col in ['avg_comment_sentiment', 'comment_sentiment_std', 'avg_top_comment_replies', 'favorite_count', 'channel_video_count']:
-    df[col].fillna(0, inplace=True)
+        return {
+            'avg_sentiment': round(sum(sentiments) / len(sentiments), 4),
+            'sentiment_std': round(pd.Series(sentiments).std(ddof=0), 4),
+            'avg_reply_count': round(sum(reply_counts) / len(reply_counts), 2)
+        }
+    except Exception as e:
+        logging.warning(f"Could not fetch/analyze comments for video {video_id}: {e}")
+        return {'avg_sentiment': 0.0, 'sentiment_std': 0.0, 'avg_reply_count': 0.0}
 
-# --- Create Target Labels for ML Models ---
-logging.info("Calculating target labels for models...")
-df['peak_view_count'] = df.groupby('video_id')['view_count'].transform('max')
-view_threshold = df['peak_view_count'].quantile(0.75)
-df['will_trend'] = np.where(df['peak_view_count'] >= view_threshold, 1, 0)
-peak_view_idx = df.groupby('video_id')['view_count'].idxmax()
-df_peaks = df.loc[peak_view_idx][['video_id', 'days_since_published']].rename(columns={'days_since_published': 'days_to_peak'})
-df = pd.merge(df, df_peaks, on='video_id', how='left')
-bins = df['peak_view_count'].quantile([0, 0.5, 0.75, 0.9, 1.0])
-labels = ['Standard', 'Popular', 'High-Performing', 'Viral']
-df['performance_bucket'] = pd.cut(df['peak_view_count'], bins=bins.values, labels=labels, include_lowest=True)
+def fetch_new_video_details(youtube, new_ids):
+    if not new_ids: return pd.DataFrame()
 
-# --- 4. SAVE FINAL DATASETS ---
-# Use absolute path for output files as well
-workspace = os.environ.get('GITHUB_WORKSPACE', '.')
-df.to_parquet(os.path.join(workspace, 'final_processed_data.parquet'), index=False)
-logging.info("Final processed data saved to 'final_processed_data.parquet'.")
+    video_items = []
+    for i in range(0, len(new_ids), 50):
+        chunk = new_ids[i:i+50]
+        try:
+            video_request = youtube.videos().list(part="snippet,contentDetails,status,topicDetails,statistics", id=",".join(chunk))
+            video_response = video_request.execute()
+            video_items.extend(video_response.get('items', []))
+        except Exception as e:
+            logging.error(f"Error fetching video details for chunk {i//50 + 1}: {e}")
 
-# --- 5. CREATE CORPUS FOR GPT-2 ---
-df_unique_videos = df.drop_duplicates(subset=['video_id'])
-corpus_text = (df_unique_videos['title'] + ' ' + df_unique_videos['tags']).tolist()
-with open(os.path.join(workspace, 'corpus.txt'), 'w', encoding='utf-8') as f:
-    for line in corpus_text:
-        f.write(str(line) + '\n')
-logging.info("Text corpus for generative model saved to 'corpus.txt'.")
+    if not video_items: return pd.DataFrame()
+
+    channel_ids = list({item['snippet']['channelId'] for item in video_items})
+    channel_data = {}
+
+    for i in range(0, len(channel_ids), 50):
+        chunk = channel_ids[i:i+50]
+        channel_request = youtube.channels().list(part="statistics,snippet,brandingSettings,topicDetails", id=",".join(chunk))
+        channel_response = channel_request.execute()
+        for item in channel_response.get('items', []):
+            channel_data[item['id']] = {
+                'subscriber_count': int(item['statistics'].get('subscriberCount', 0)),
+                'video_count': int(item['statistics'].get('videoCount', 0)),
+                'published_at': item['snippet'].get('publishedAt'),
+                'country': item['snippet'].get('country'),
+                'keywords': item.get('brandingSettings', {}).get('channel', {}).get('keywords', ''),
+                'topic_categories': "|".join(item.get('topicDetails', {}).get('topicCategories', []))
+            }
+
+    video_details = []
+    for item in video_items:
+        video_id = item['id']
+        channel_id = item['snippet']['channelId']
+
+        comment_analysis = analyze_comment_threads(youtube, video_id)
+        chan_info = channel_data.get(channel_id, {})
+
+        details = {
+            'video_id': video_id,
+            'published_at': item['snippet']['publishedAt'],
+            'channel_id': channel_id,
+            'title': item['snippet']['title'],
+            'description': item['snippet']['description'],
+            'channel_title': item['snippet']['channelTitle'],
+            'subscriber_count': chan_info.get('subscriber_count', 0),
+            'channel_published_at': chan_info.get('published_at'),
+            'channel_country': chan_info.get('country'),
+            'channel_video_count': chan_info.get('video_count', 0),
+            'channel_keywords': chan_info.get('keywords'),
+            'channel_topic_categories': chan_info.get('topic_categories'),
+            'avg_comment_sentiment': comment_analysis['avg_sentiment'],
+            'comment_sentiment_std': comment_analysis['sentiment_std'],
+            'avg_top_comment_replies': comment_analysis['avg_reply_count'],
+            'thumbnail_url': item['snippet']['thumbnails'].get('high', {}).get('url'),
+            'tags': "|".join(item['snippet'].get('tags', [])),
+            'category_id': item['snippet']['categoryId'],
+            'topic_categories': "|".join(item.get('topicDetails', {}).get('topicCategories', [])),
+            'license': item['status']['license'],
+            'live_broadcast_content': item['snippet']['liveBroadcastContent'],
+            'default_language': item['snippet'].get('defaultLanguage'),
+            'default_audio_language': item['snippet'].get('defaultAudioLanguage'),
+            'is_embeddable': item['status']['embeddable'],
+            'made_for_kids': item['status'].get('madeForKids', False),
+            'favorite_count': int(item['statistics'].get('favoriteCount', 0)),
+            'duration': item['contentDetails']['duration'],
+            'definition': item['contentDetails']['definition'],
+            'caption': item['contentDetails']['caption'],
+            'licensed_content': item['contentDetails']['licensedContent'],
+            'added_at': datetime.datetime.utcnow().isoformat()
+        }
+        video_details.append(details)
+
+    return pd.DataFrame(video_details)
+
+def fetch_stats_for_all_videos(youtube, all_ids):
+    if not all_ids: return pd.DataFrame()
+    stats_list = []
+    for i in range(0, len(all_ids), 50):
+        chunk = all_ids[i:i+50]
+        request = youtube.videos().list(part="statistics", id=",".join(chunk))
+        response = request.execute()
+        timestamp = datetime.datetime.utcnow().isoformat()
+        for item in response.get('items', []):
+            stats = {
+                'video_id': item['id'], 'fetch_timestamp': timestamp,
+                'view_count': int(item['statistics'].get('viewCount', 0)),
+                'like_count': int(item['statistics'].get('likeCount', 0)),
+                'comment_count': int(item['statistics'].get('commentCount', 0))
+            }
+            stats_list.append(stats)
+    return pd.DataFrame(stats_list)
+
+def main():
+    if not API_KEY:
+        logging.error("API_KEY environment variable not found.")
+        return
+    youtube = build('youtube', 'v3', developerKey=API_KEY)
+
+    with get_db_connection() as conn:
+        existing_ids = get_existing_video_ids(conn)
+        logging.info(f"Found {len(existing_ids)} existing videos in the database.")
+
+        region_codes = ['IN', 'US', 'GB', 'JP', 'BR']
+        all_trending_ids = set()
+
+        logging.info(f"Fetching trending videos for regions: {region_codes}")
+        for region in region_codes:
+            try:
+                trending_req = youtube.videos().list(part="id", chart="mostPopular", regionCode=region, maxResults=50)
+                trending_res = trending_req.execute()
+                region_ids = {item['id'] for item in trending_res.get('items', [])}
+                all_trending_ids.update(region_ids)
+                logging.info(f"Found {len(region_ids)} videos for region '{region}'.")
+            except Exception as e:
+                logging.error(f"Could not fetch trending videos for region '{region}': {e}")
+
+        logging.info(f"Total unique trending videos found across all regions: {len(all_trending_ids)}")
+
+        new_ids = list(all_trending_ids - existing_ids)
+
+        if new_ids:
+            logging.info(f"Found {len(new_ids)} new videos to process.")
+            df_new_details = fetch_new_video_details(youtube, new_ids)
+            if not df_new_details.empty:
+                df_new_details.to_sql('videos', conn, if_exists='append', index=False)
+                logging.info(f"Saved details for {len(df_new_details)} new videos.")
+        else:
+            logging.info("No new trending videos found across specified regions.")
+
+        all_tracked_ids = list(existing_ids.union(all_trending_ids))
+        if all_tracked_ids:
+            logging.info(f"Fetching latest stats for {len(all_tracked_ids)} total videos.")
+            df_stats = fetch_stats_for_all_videos(youtube, all_tracked_ids)
+            if not df_stats.empty:
+                df_stats.to_sql('statistics', conn, if_exists='append', index=False)
+                logging.info(f"Saved {len(df_stats)} new statistics records.")
+
+if __name__ == '__main__':
+    main()
